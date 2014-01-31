@@ -24,6 +24,9 @@
 import sys, os, time, datetime, argparse, threading, signal
 from fnmatch import fnmatch
 import boto
+import logging
+import random
+from time import sleep
 
 __version__ = '0.8.1'
 
@@ -46,6 +49,34 @@ examples:
  or
     boto-rsync [OPTIONS] s3://bucketname/ s3://another_bucket/
 """
+
+def insist(function, *args, **kwargs):
+    """
+    Implementing truncated binary exponential backoff.
+
+    See https://forums.aws.amazon.com/thread.jspa?messageID=366822# and
+    http://en.wikipedia.org/wiki/Truncated_binary_exponential_backoff#Binary_exponential_backoff_.2F_truncated_exponential_backoff
+    for details.
+
+    Additionally exception_filter callable may be passed to filter
+    exceptions to handle. Callable must take exception instance. If it's
+    return value resolves to False, then exception will be propagated.
+    """
+    slot = 2    # seconds
+    max_slots = 1023    # seconds
+    attempts = 16
+    exception_filter = kwargs.pop('exception_filter', lambda x: x)
+    for i in range(2, attempts + 2):
+        multiplicator = random.choice(range(1, i))
+        try:
+            return function(*args, **kwargs)
+        except BaseException, err:
+            if not exception_filter(err):
+                raise
+            logging.debug(str(err))
+            sleep(min(max_slots, (slot ** multiplicator - 1)))
+    return function(*args, **kwargs)
+
 
 def usage(parser):
     """Prints the usage string and exits."""
@@ -411,13 +442,13 @@ def main():
     
     # Connect to Cloud
     if cloud_service == 'gs':
-        c = boto.connect_gs(gs_access_key_id=cloud_access_key_id,
+        c = insist(boto.connect_gs, gs_access_key_id=cloud_access_key_id,
                             gs_secret_access_key=cloud_secret_access_key)
     else:
         if anon:
-            c = boto.connect_s3(host=endpoint, anon=True)
+            c = insist(boto.connect_s3, host=endpoint, anon=True)
         else:
-            c = boto.connect_s3(aws_access_key_id=cloud_access_key_id,
+            c = insist(boto.connect_s3, aws_access_key_id=cloud_access_key_id,
                                 aws_secret_access_key=cloud_secret_access_key,
                                 host=endpoint)
     c.debug = debug
